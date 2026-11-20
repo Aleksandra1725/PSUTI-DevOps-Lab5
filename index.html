@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Выгрузка событий в CSV (Вариант 10)</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f4; }
+        .container { max-width: 1000px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        h1 { color: #333; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #007bff; color: white; }
+        tr:nth-child(even) { background-color: #f2f2f2; }
+        .controls { margin: 20px 0; padding: 15px; background: #e9ecef; border-radius: 5px; }
+        .controls h3 { margin-top: 0; }
+        .column-list { display: flex; flex-wrap: wrap; gap: 15px; margin-bottom: 15px; }
+        .column-item { display: flex; align-items: center; gap: 5px; }
+        button { padding: 10px 20px; background-color: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; }
+        button:hover { background-color: #218838; }
+        button:disabled { background-color: #ccc; }
+        .error { color: red; margin-top: 10px; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Выгрузка событий в CSV</h1>
+    <p>Выберите события, настройте столбцы и порядок, затем нажмите кнопку.</p>
+
+    <!-- Блок настроек -->
+    <div class="controls">
+        <h3>1. Выберите столбцы и их порядок (перетаскивайте для изменения порядка)</h3>
+        <div id="columnSettings" class="column-list">
+            <!-- Сюда JS вставит чекбоксы для столбцов -->
+        </div>
+
+        <h3>2. Выберите события для выгрузки</h3>
+        <div id="eventList">
+            <!-- Сюда JS вставит таблицу с событиями -->
+        </div>
+
+        <br>
+        <button id="exportBtn" onclick="exportSelectedEvents()">Скачать CSV</button>
+        <div id="errorMsg" class="error"></div>
+    </div>
+</div>
+
+<script>
+    // Базовый URL для API (Nginx проксирует /api на бэкенд)
+    const API_URL = '/api/v1/events';
+
+    // Все доступные столбцы (соответствуют реальным полям из ответа API)
+    const ALL_COLUMNS = [
+        { id: 'id', label: 'ID' },
+        { id: 'title', label: 'Название' },
+        { id: 'starts_at', label: 'Дата и время' },
+        { id: 'genre_code', label: 'Тип' },
+        { id: 'description', label: 'Описание' },
+        { id: 'price_rub', label: 'Цена (руб)' },
+        { id: 'status', label: 'Статус' }
+    ];
+
+    // Переменная для хранения загруженных событий
+    let eventsData = [];
+    // Переменная для хранения текущего порядка столбцов
+    let currentColumnOrder = ALL_COLUMNS.map(c => c.id);
+
+    document.addEventListener('DOMContentLoaded', () => {
+        renderColumnSettings();
+        fetchEvents();
+    });
+
+    function renderColumnSettings() {
+        const container = document.getElementById('columnSettings');
+        container.innerHTML = '';
+        currentColumnOrder.forEach(colId => {
+            const col = ALL_COLUMNS.find(c => c.id === colId);
+            if (!col) return;
+            const div = document.createElement('div');
+            div.className = 'column-item';
+            div.draggable = true;
+            div.dataset.colId = colId;
+            div.innerHTML = `
+                <input type="checkbox" id="col_${colId}" checked>
+                <label for="col_${colId}">${col.label}</label>
+                <span style="cursor: move; margin-left: 5px;">☰</span>
+            `;
+            div.addEventListener('dragstart', handleDragStart);
+            div.addEventListener('dragover', handleDragOver);
+            div.addEventListener('drop', handleDrop);
+            container.appendChild(div);
+        });
+    }
+
+    let draggedItem = null;
+
+    function handleDragStart(e) {
+        draggedItem = this;
+        e.dataTransfer.effectAllowed = 'move';
+    }
+
+    function handleDragOver(e) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+    }
+
+    function handleDrop(e) {
+        e.preventDefault();
+        if (this !== draggedItem) {
+            const allItems = [...document.querySelectorAll('.column-item')];
+            const draggedIndex = allItems.indexOf(draggedItem);
+            const targetIndex = allItems.indexOf(this);
+            
+            if (draggedIndex < targetIndex) {
+                this.parentNode.insertBefore(draggedItem, this.nextSibling);
+            } else {
+                this.parentNode.insertBefore(draggedItem, this);
+            }
+            updateColumnOrderFromDOM();
+        }
+    }
+
+    function updateColumnOrderFromDOM() {
+        const items = document.querySelectorAll('.column-item');
+        currentColumnOrder = [...items].map(item => item.dataset.colId);
+    }
+
+    async function fetchEvents() {
+        const listContainer = document.getElementById('eventList');
+        listContainer.innerHTML = '<p>Загрузка событий...</p>';
+        try {
+            const response = await fetch(API_URL);
+            if (!response.ok) throw new Error('Ошибка сети');
+            let responseData = await response.json();
+            
+            // Разбираем структуру { data: [...], meta: {...} }
+            if (responseData.data && Array.isArray(responseData.data)) {
+                eventsData = responseData.data;
+            } else if (Array.isArray(responseData)) {
+                eventsData = responseData;
+            } else {
+                throw new Error('Неверный формат данных от API');
+            }
+
+            renderEventTable();
+        } catch (error) {
+            console.error(error);
+            listContainer.innerHTML = `<p style="color:red;">Не удалось загрузить события. Проверьте, работает ли бэкенд.<br>Ошибка: ${error.message}</p>`;
+            document.getElementById('exportBtn').disabled = true;
+        }
+    }
+
+    function renderEventTable() {
+        const container = document.getElementById('eventList');
+        if (eventsData.length === 0) {
+            container.innerHTML = '<p>События не найдены.</p>';
+            return;
+        }
+
+        let html = '<table><thead><tr><th>Выбрать</th><th>ID</th><th>Название</th><th>Дата и время</th><th>Цена</th></tr></thead><tbody>';
+        eventsData.forEach((event, index) => {
+            // Красиво форматируем дату
+            let dateStr = event.starts_at || '-';
+            if (dateStr !== '-') {
+                const d = new Date(dateStr);
+                dateStr = d.toLocaleString('ru-RU');
+            }
+            html += `
+                <tr>
+                    <td><input type="checkbox" class="event-checkbox" data-index="${index}"></td>
+                    <td>${event.id || '-'}</td>
+                    <td>${event.title || '-'}</td>
+                    <td>${dateStr}</td>
+                    <td>${event.price_rub || '0'} руб.</td>
+                </tr>
+            `;
+        });
+        html += '</tbody></table>';
+        container.innerHTML = html;
+    }
+
+    function exportSelectedEvents() {
+        const errorDiv = document.getElementById('errorMsg');
+        errorDiv.textContent = '';
+
+        const checkboxes = document.querySelectorAll('.event-checkbox:checked');
+        if (checkboxes.length === 0) {
+            errorDiv.textContent = 'Пожалуйста, выберите хотя бы одно событие.';
+            return;
+        }
+
+        const selectedEvents = [];
+        checkboxes.forEach(cb => {
+            const index = parseInt(cb.dataset.index);
+            selectedEvents.push(eventsData[index]);
+        });
+
+        const selectedColumnIds = [];
+        currentColumnOrder.forEach(colId => {
+            const checkbox = document.getElementById(`col_${colId}`);
+            if (checkbox && checkbox.checked) {
+                selectedColumnIds.push(colId);
+            }
+        });
+
+        if (selectedColumnIds.length === 0) {
+            errorDiv.textContent = 'Пожалуйста, выберите хотя бы один столбец для выгрузки.';
+            return;
+        }
+
+        // Формируем CSV
+        const headers = selectedColumnIds.map(id => ALL_COLUMNS.find(c => c.id === id).label);
+        let csvContent = headers.join(',') + '\n';
+
+        selectedEvents.forEach(event => {
+            const row = selectedColumnIds.map(colId => {
+                let value = event[colId];
+                
+                // Преобразуем дату в читаемый вид
+                if (colId === 'starts_at' && value) {
+                    const d = new Date(value);
+                    value = d.toLocaleString('ru-RU');
+                }
+
+                if (value === undefined || value === null) value = '';
+                value = String(value).replace(/"/g, '""');
+                if (value.includes(',') || value.includes('"') || value.includes('\n')) {
+                    value = `"${value}"`;
+                }
+                return value;
+            });
+            csvContent += row.join(',') + '\n';
+        });
+
+        const blob = new Blob(["\uFEFF" + csvContent], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
+        const url = URL.createObjectURL(blob);
+        link.setAttribute('href', url);
+        link.setAttribute('download', 'events_export.csv');
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
+</script>
+</body>
+</html>
