@@ -14,7 +14,7 @@ services:
       retries: 5
 
   backend:
-    build: https://github.com/nelkor/kazan-events.git
+    image: ghcr.io/nelkor/kazan-events:latest
     environment:
       PG_HOST: db
       PG_PORT: 5432
